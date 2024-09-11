@@ -7,7 +7,7 @@ param (
     [string]$storageSyncServiceName
 )
 
-Write-Output "Removing dependencies for Storage Sync Service: $storageSyncServiceName and resource group: $resourceGroupName"
+Write-Host "Removing dependencies for Storage Sync Service: $storageSyncServiceName and resource group: $resourceGroupName"
 
 # Function to unregister the server
 function Unregister-Server {
@@ -16,11 +16,11 @@ function Unregister-Server {
         [string]$storageSyncServiceName,
         [string]$serverId
     )
-    Write-Output "Unregistering Server: $serverId"
+    Write-Host "Unregistering Server: $serverId"
     ## Remove-AzStorageSyncRegisteredServer -ResourceGroupName $resourceGroupName -StorageSyncServiceName $storageSyncServiceName -ServerId $serverId -Force
     $RegisteredServer = Get-AzStorageSyncServer -ResourceGroupName $resourceGroupName -StorageSyncServiceName $storageSyncServiceName
     Unregister-AzStorageSyncServer -Force -ResourceGroupName $resourceGroupName -StorageSyncServiceName $storageSyncServiceName -ServerId $RegisteredServer.ServerId
-    Write-Output "Unregistered Server: $serverId"
+    Write-Host "Unregistered Server: $serverId"
 }
 
 
@@ -31,12 +31,12 @@ function Remove-ServerEndpoints {
         [string]$storageSyncServiceName,
         [string]$syncGroupName
     )
-    write-output "Removing Server Endpoints in Sync Group: $syncGroupName and resource group: $resourceGroupName and storage sync service: $storageSyncServiceName"
+    Write-Host "Removing Server Endpoints in Sync Group: $syncGroupName and resource group: $resourceGroupName and storage sync service: $storageSyncServiceName"
     $serverEndpoints = Get-AzStorageSyncServerEndpoint -ResourceGroupName $resourceGroupName -StorageSyncServiceName $storageSyncServiceName -SyncGroupName $syncGroupName
     foreach ($serverEndpoint in $serverEndpoints) {
         Unregister-Server -resourceGroupName $resourceGroupName -storageSyncServiceName $storageSyncServiceName -serverId $serverEndpoint.ServerResourceId
         Remove-AzStorageSyncServerEndpoint -ResourceGroupName $resourceGroupName -StorageSyncServiceName $storageSyncServiceName -SyncGroupName $syncGroupName -Name $serverEndpoint.ServerEndpointName -Force
-        Write-Output "Removed Server Endpoint: $($serverEndpoint.ServerEndpointName)"
+        Write-Host "Removed Server Endpoint: $($serverEndpoint.ServerEndpointName)"
     }
 }
 
@@ -50,7 +50,7 @@ function Remove-CloudEndpoints {
     $cloudEndpoints = Get-AzStorageSyncCloudEndpoint -ResourceGroupName $resourceGroupName -StorageSyncServiceName $storageSyncServiceName -SyncGroupName $syncGroupName
     foreach ($cloudEndpoint in $cloudEndpoints) {
         Remove-AzStorageSyncCloudEndpoint -ResourceGroupName $resourceGroupName -StorageSyncServiceName $storageSyncServiceName -SyncGroupName $syncGroupName -Name $cloudEndpoint.CloudEndpointName -Force
-        Write-Output "Removed Cloud Endpoint: $($cloudEndpoint.CloudEndpointName)"
+        Write-Host "Removed Cloud Endpoint: $($cloudEndpoint.CloudEndpointName)"
     }
 }
 
@@ -60,7 +60,7 @@ function Remove-SyncGroups {
         [string]$resourceGroupName,
         [string]$storageSyncServiceName
     )
-    Write-Output "Removing Sync Groups in Storage Sync Service: $storageSyncServiceName and resource group: $resourceGroupName"
+    Write-Host "Removing Sync Groups in Storage Sync Service: $storageSyncServiceName and resource group: $resourceGroupName"
     $syncGroups = Get-AzStorageSyncGroup -ResourceGroupName $resourceGroupName -StorageSyncServiceName $storageSyncServiceName
     foreach ($syncGroup in $syncGroups) {
         # Remove server endpoints
@@ -69,15 +69,15 @@ function Remove-SyncGroups {
         Remove-CloudEndpoints -resourceGroupName $resourceGroupName -storageSyncServiceName $storageSyncServiceName -syncGroupName $syncGroup.SyncGroupName
         # Remove sync group
         Remove-AzStorageSyncGroup -ResourceGroupName $resourceGroupName -StorageSyncServiceName $storageSyncServiceName -Name $syncGroup.SyncGroupName -Force
-        Write-Output "Removed Sync Group: $($syncGroup.SyncGroupName)"
+        Write-Host "Removed Sync Group: $($syncGroup.SyncGroupName)"
     }
 }
 
 # Main script to remove the storage sync service and its dependencies
-Write-Output "Removing dependencies for Storage Sync Service: $storageSyncServiceName"
+Write-Host "Removing dependencies for Storage Sync Service: $storageSyncServiceName"
 Remove-SyncGroups -resourceGroupName $resourceGroupName -storageSyncServiceName $storageSyncServiceName
 
-Write-Output "Removing Storage Sync Service: $storageSyncServiceName"
+Write-Host "Removing Storage Sync Service: $storageSyncServiceName"
 Remove-AzStorageSyncService -ResourceGroupName $resourceGroupName -Name $storageSyncServiceName -Force
 
-Write-Output "Storage Sync Service and all its dependencies have been removed."
+Write-Host "Storage Sync Service and all its dependencies have been removed."

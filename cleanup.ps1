@@ -19,43 +19,43 @@ function Remove-NsgAssociations {
     foreach ($nic in $networkInterfaces) {
         $nic.NetworkSecurityGroup = $null
         Set-AzNetworkInterface -NetworkInterface $nic
-        Write-Output "Removed NSG association from NIC: $($nic.Name)"
+        Write-Host "Removed NSG association from NIC: $($nic.Name)"
     }
 }
 
-foreach($resourceGroup in $resourceGroups) {
+foreach ($resourceGroup in $resourceGroups) {
     $resourceGroupName = $resourceGroup.ResourceGroupName
-    Write-Output "=== RG:  $($resourceGroupName) ==="
+    Write-Host "=== RG:  $($resourceGroupName) ===" -ForegroundColor Blue
     # Get all resources in the resource group
     $resources = Get-AzResource -ResourceGroupName $resourceGroupName | Sort-Object -Property ResourceType
-    if ($delete -eq "true"){
+    if ($delete -eq "true") {
         # Delete each resource
         foreach ($resource in $resources) {
-            Write-Output "Investigate to delete $($resource.Name)"
+            Write-Host "Investigate to delete $($resource.Name)"
             try {
                 if ($resource.ResourceType -eq "Microsoft.Network/networkSecurityGroups") {
                     # Remove NSG associations before deleting the NSG
-                    Write-Output "Delete assosiations for $($resource.Name)"
+                    Write-Host "Delete assosiations for $($resource.Name)"
                     Remove-NsgAssociations -nsgId $resource.ResourceId 
                 }
                 elseif ($resource.ResourceType -eq "Microsoft.StorageSync/storageSyncServices") {
                     # Remove sync groups before deleting the storage sync service
                     .\clear_syncgroup.ps1 -resourceGroupName $resourceGroupName -storageSyncServiceName  $resource.ResourceName
                 }
-                Write-Output "Deleting resource: $($resource.Name) of type $($resource.ResourceType)"
+                Write-Host "Deleting resource: $($resource.Name) of type $($resource.ResourceType)"
                 Remove-AzResource -ResourceId $resource.ResourceId -Force -ErrorAction Stop 
                 # Optionally, delete the resource group itself if it's empty
                 try {
-                    Write-Output "Deleting resource group: $resourceGroupName"
+                    Write-Host "Deleting resource group: $resourceGroupName"
                     Remove-AzResourceGroup -Name $resourceGroupName -Force -ErrorAction Stop
-                    Write-Output "Resource group $resourceGroupName deleted."
+                    Write-Host "Resource group $resourceGroupName deleted."
                 }
                 catch {
-                    "Failed to delete resource group: $resourceGroupName. Error: $_"
+                    Write-host "Failed to delete resource group: $resourceGroupName. Error: $_"  -ForegroundColor Red
                 }
             }
             catch {
-                "Failed to delete resource: $($resource.Name). Error: $_"
+                Write-host "Failed to delete resource: $($resource.Name). Error: $_" -ForegroundColor Red
             }  
         }
     }
