@@ -1,0 +1,7 @@
+[ ] Overview confirmation before delete 
+[ ] Add timings
+[ ] Add summary
+
+$resourceGroupName = "AzureMonitor-DataCollectionRules"
+$dataCollectionRuleName = "microsoft-avdi-westeurope"
+Remove-AzDataCollectionRule -ResourceGroupName $resourceGroupName -Name $dataCollectionRuleName 
