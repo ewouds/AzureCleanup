@@ -39,201 +39,6 @@ param (
     [switch]$Force
 )
 
-# Function to format PSNetAppFilesVolume objects in human-readable format
-function Format-NetAppVolume {
-    <#
-    .SYNOPSIS
-        Formats a PSNetAppFilesVolume object in human-readable format.
-    
-    .DESCRIPTION
-        Converts Microsoft.Azure.Commands.NetAppFiles.Models.PSNetAppFilesVolume objects
-        into a formatted, easy-to-read display showing all important properties.
-    
-    .PARAMETER Volume
-        The PSNetAppFilesVolume object to format.
-    
-    .EXAMPLE
-        $volume = Get-AzNetAppFilesVolume -ResourceGroupName "myRG" -AccountName "myAccount" -PoolName "myPool" -Name "myVolume"
-        Format-NetAppVolume -Volume $volume
-    #>
-    [CmdletBinding()]
-    param (
-        [Parameter(Mandatory = $true, ValueFromPipeline = $true)]
-        [Microsoft.Azure.Commands.NetAppFiles.Models.PSNetAppFilesVolume]$Volume
-    )
-    
-    process {
-        $output = @"
-
-╔══════════════════════════════════════════════════════════════════════════════
-║ NetApp Files Volume Details
-╚══════════════════════════════════════════════════════════════════════════════
-
-┌─ Basic Information ──────────────────────────────────────────────────────────
-│ Name:                 $($Volume.Name)
-│ Resource Group:       $($Volume.ResourceGroupName)
-│ Location:             $($Volume.Location)
-│ Resource ID:          $($Volume.Id)
-│ Provisioning State:   $($Volume.ProvisioningState)
-│ Creation Time:        $($Volume.CreationToken)
-└──────────────────────────────────────────────────────────────────────────────
-
-┌─ Hierarchy ──────────────────────────────────────────────────────────────────
-│ NetApp Account:       $(($Volume.Id -split '/')[8])
-│ Capacity Pool:        $(($Volume.Id -split '/')[10])
-│ Volume Name:          $(($Volume.Id -split '/')[12])
-└──────────────────────────────────────────────────────────────────────────────
-
-┌─ Storage Configuration ──────────────────────────────────────────────────────
-│ Usage (GB):           $([math]::Round($Volume.UsageThreshold / 1GB, 2)) GB
-│ Service Level:        $($Volume.ServiceLevel)
-│ Protocol Types:       $($Volume.ProtocolTypes -join ', ')
-│ File Path:            $($Volume.CreationToken)
-│ Subnet ID:            $($Volume.SubnetId)
-└──────────────────────────────────────────────────────────────────────────────
-
-┌─ Mount Information ──────────────────────────────────────────────────────────
-│ Mount Targets:        $($Volume.MountTargets.Count)
-"@
-
-        if ($Volume.MountTargets -and $Volume.MountTargets.Count -gt 0) {
-            foreach ($mt in $Volume.MountTargets) {
-                $output += @"
-
-│   • IP Address:       $($mt.IpAddress)
-│     Mount Target ID:  $($mt.MountTargetId)
-│     File System ID:   $($mt.FileSystemId)
-"@
-            }
-        }
-        
-        $output += @"
-
-└──────────────────────────────────────────────────────────────────────────────
-
-┌─ Data Protection ────────────────────────────────────────────────────────────
-"@
-
-        if ($Volume.DataProtection) {
-            if ($Volume.DataProtection.Backup) {
-                $output += @"
-
-│ Backup Enabled:       Yes
-│   Backup Policy ID:   $($Volume.DataProtection.Backup.BackupPolicyId)
-│   Policy Enforced:    $($Volume.DataProtection.Backup.PolicyEnforced)
-│   Vault ID:           $($Volume.DataProtection.Backup.VaultId)
-"@
-            } else {
-                $output += "`n│ Backup Enabled:       No"
-            }
-            
-            if ($Volume.DataProtection.Replication) {
-                $output += @"
-
-│ Replication:          Yes
-│   Remote Volume:      $($Volume.DataProtection.Replication.RemoteVolumeResourceId)
-│   Replication Type:   $($Volume.DataProtection.Replication.ReplicationSchedule)
-│   Endpoint Type:      $($Volume.DataProtection.Replication.EndpointType)
-"@
-            } else {
-                $output += "`n│ Replication:          No"
-            }
-            
-            if ($Volume.DataProtection.Snapshot) {
-                $output += @"
-
-│ Snapshot Policy:      Yes
-│   Snapshot Policy ID: $($Volume.DataProtection.Snapshot.SnapshotPolicyId)
-"@
-            } else {
-                $output += "`n│ Snapshot Policy:      No"
-            }
-        } else {
-            $output += "`n│ Data Protection:      Not configured"
-        }
-        
-        $output += @"
-
-└──────────────────────────────────────────────────────────────────────────────
-
-┌─ Export Policy ──────────────────────────────────────────────────────────────
-"@
-
-        if ($Volume.ExportPolicy -and $Volume.ExportPolicy.Rules -and $Volume.ExportPolicy.Rules.Count -gt 0) {
-            $output += "`n│ Export Rules:         $($Volume.ExportPolicy.Rules.Count) rule(s)"
-            $ruleNum = 1
-            foreach ($rule in $Volume.ExportPolicy.Rules) {
-                $output += @"
-
-│
-│ Rule ${ruleNum}:
-│   Rule Index:         $($rule.RuleIndex)
-│   Allowed Clients:    $($rule.AllowedClients)
-│   Unix Read Only:     $($rule.UnixReadOnly)
-│   Unix Read Write:    $($rule.UnixReadWrite)
-│   Protocols:          $($rule.ProtocolTypes -join ', ')
-│   Has Root Access:    $($rule.HasRootAccess)
-"@
-                $ruleNum++
-            }
-        } else {
-            $output += "`n│ Export Rules:         None configured"
-        }
-        
-        $output += @"
-
-└──────────────────────────────────────────────────────────────────────────────
-
-┌─ Security & Network ─────────────────────────────────────────────────────────
-│ Security Style:       $($Volume.SecurityStyle)
-│ SMB Encryption:       $($Volume.SmbEncryption)
-│ SMB Continuously Avl: $($Volume.SmbContinuouslyAvailable)
-│ Encryption Key Src:   $($Volume.EncryptionKeySource)
-│ Network Features:     $($Volume.NetworkFeatures)
-│ Network Sibling Set:  $($Volume.NetworkSiblingSetId)
-└──────────────────────────────────────────────────────────────────────────────
-
-┌─ Snapshot & Backup Information ──────────────────────────────────────────────
-│ Snapshot Directory:   $($Volume.SnapshotDirectoryVisible)
-│ Snapshot ID:          $($Volume.SnapshotId)
-│ Backup Enabled:       $($Volume.BackupEnabled)
-│ Backup ID:            $($Volume.BackupId)
-└──────────────────────────────────────────────────────────────────────────────
-
-┌─ Advanced Settings ──────────────────────────────────────────────────────────
-│ Throughput (MiB/s):   $($Volume.ThroughputMibps)
-│ Cool Access:          $($Volume.CoolAccess)
-│ Coolness Period:      $($Volume.CoolnessPeriod) days
-│ Unix Permissions:     $($Volume.UnixPermissions)
-│ Avail Zone:           $($Volume.AvailabilityZone)
-│ Capacity Pool Res:    $($Volume.CapacityPoolResourceId)
-│ Cloning Progress:     $($Volume.CloneProgress)
-│ Is Default Quota:     $($Volume.IsDefaultQuotaEnabled)
-│ Default User Quota:   $($Volume.DefaultUserQuotaInKiBs) KiB
-│ Default Group Quota:  $($Volume.DefaultGroupQuotaInKiBs) KiB
-└──────────────────────────────────────────────────────────────────────────────
-
-┌─ Tags ───────────────────────────────────────────────────────────────────────
-"@
-
-        if ($Volume.Tags -and $Volume.Tags.Count -gt 0) {
-            foreach ($tag in $Volume.Tags.GetEnumerator()) {
-                $output += "`n│ $($tag.Key): $($tag.Value)"
-            }
-        } else {
-            $output += "`n│ No tags defined"
-        }
-        
-        $output += @"
-
-└──────────────────────────────────────────────────────────────────────────────
-
-"@
-
-        Write-Host $output -ForegroundColor Cyan
-    }
-}
-
 # Function to detect NetApp resources in a resource group
 function Get-NetAppResourcesInResourceGroup {
     [CmdletBinding()]
@@ -258,13 +63,13 @@ function Get-NetAppResourcesInResourceGroup {
             Write-Host "  Found $($accounts.Count) NetApp account(s) in resource group '$ResourceGroupName'" -ForegroundColor Yellow
             
             $result = @{
-                Accounts = $accounts
-                Pools = @()
-                Volumes = @()
+                Accounts       = $accounts
+                Pools          = @()
+                Volumes        = @()
                 BackupPolicies = @()
-                BackupVaults = @()
-                Snapshots = @()
-                VolumeBackups = @()
+                BackupVaults   = @()
+                Snapshots      = @()
+                VolumeBackups  = @()
             }
             
             # Get capacity pools, volumes, and backup policies for each account
@@ -301,7 +106,8 @@ function Get-NetAppResourcesInResourceGroup {
                                         if ($backups) {
                                             $result.VolumeBackups += $backups
                                         }
-                                    } catch {
+                                    }
+                                    catch {
                                         Write-Warning "  Error retrieving volume backups for $volumeName in pool ${poolName}: ${_}"
                                     }
                                 }
@@ -323,7 +129,8 @@ function Get-NetAppResourcesInResourceGroup {
                     if ($backupVaults) {
                         $result.BackupVaults += $backupVaults
                     }
-                } catch {
+                }
+                catch {
                     Write-Warning "  Error retrieving backup vaults for account $accountName (command may not be supported): ${_}"
                 }
             }
@@ -339,11 +146,13 @@ function Get-NetAppResourcesInResourceGroup {
             Write-Host "    Backup Vaults: $($result.BackupVaults.Count)" -ForegroundColor Yellow
             
             return $result
-        } else {
+        }
+        else {
             Write-Host "  No NetApp accounts found in resource group '$ResourceGroupName'" -ForegroundColor Green
             return $null
         }
-    } catch {
+    }
+    catch {
         Write-Warning "  Error detecting NetApp resources: ${_}"
         return $null
     }
@@ -359,29 +168,156 @@ function Remove-NetAppResourcesSafely {
         
     )
     write-host "Removing NetApp resources..." -ForegroundColor Yellow
-    write-host $NetAppResources.Volumes
 
-# 1. remove the volumes
+    # 1. remove the volumes
     foreach ($volume in $NetAppResources.Volumes) {
-        # write content of volume in humane readable format 
-        write-host $volume
-        $accountName = $volume.AccountName
-
-        $poolName = $volume.PoolName
-        $volumeName = $volume.Name
+        #  $volume | Format-List * -Force | Out-String -Width 4096 | Write-Host -ForegroundColor Magenta
+        
+        #volumeName = ews_anf_uks/ews-anf-1tb/ews_vol_az1
+        $accountName = $volume.Name.Split('/')[0]
+        $poolName = $volume.Name.Split('/')[1]
+        $volumeName = $volume.Name.Split('/')[2]
         
         if ($PSCmdlet.ShouldProcess($volumeName, "Remove NetApp Volume")) {
             try {
                 Write-Host "  Removing volume '$volumeName' in pool '$poolName' of account '$accountName'" -ForegroundColor Yellow
-                write-host "Remove-AzNetAppFilesVolume -ResourceGroupName $ResourceGroupName -AccountName $accountName -PoolName $poolName -VolumeName $volumeName -Force"
-                exit 0
+                # write-host "Remove-AzNetAppFilesVolume -ResourceGroupName $ResourceGroupName -AccountName $accountName -PoolName $poolName -VolumeName $volumeName -Force"                
                 Remove-AzNetAppFilesVolume -ResourceGroupName $ResourceGroupName -AccountName $accountName -PoolName $poolName -VolumeName $volumeName -Force
                 Write-Host "  Successfully removed volume '$volumeName'" -ForegroundColor Green
-            } catch {
+            }
+            catch {
                 Write-Warning "  Error removing volume '$volumeName': ${_}"
             }
         }
     }
+
+    # 2. remove the capacity pools
+    foreach ($pool in $NetAppResources.Pools) {
+        $accountName = $pool.Name.Split('/')[0]
+        $poolName = $pool.Name.Split('/')[1]
+        
+        if ($PSCmdlet.ShouldProcess($poolName, "Remove NetApp Capacity Pool")) {
+            try {
+                Write-Host "  Removing capacity pool '$poolName' of account '$accountName'" -ForegroundColor Yellow
+                #write-host "Remove-AzNetAppFilesPool -ResourceGroupName $ResourceGroupName -AccountName $accountName -PoolName $poolName"
+                Remove-AzNetAppFilesPool -ResourceGroupName $ResourceGroupName -AccountName $accountName -PoolName $poolName
+                Write-Host "  Successfully removed capacity pool '$poolName'" -ForegroundColor Green
+            }
+            catch {
+                Write-Warning "  Error removing capacity pool '$poolName': ${_}"
+            }
+        }
+    }
+
+    # 3. remove the backup policies
+    foreach ($policy in $NetAppResources.BackupPolicies) {
+        $accountName = $policy.Name.Split('/')[0]
+        $policyName = $policy.Name.Split('/')[1]
+        
+        if ($PSCmdlet.ShouldProcess($policyName, "Remove NetApp Backup Policy")) {
+            try {
+                Write-Host "  Removing backup policy '$policyName' of account '$accountName'" -ForegroundColor Yellow
+                #write-host "Remove-AzNetAppFilesBackupPolicy -ResourceGroupName $ResourceGroupName -AccountName $accountName -BackupPolicyName $policyName"
+                Remove-AzNetAppFilesBackupPolicy -ResourceGroupName $ResourceGroupName -AccountName $accountName -BackupPolicyName $policyName
+                Write-Host "  Successfully removed backup policy '$policyName'" -ForegroundColor Green
+            }
+            catch {
+                Write-Warning "  Error removing backup policy '$policyName': ${_}"
+            }
+        }
+    }
+
+    # 4.0 remove backup from backup vaults
+    foreach ($backup in $NetAppResources.VolumeBackups) {
+
+        
+        
+        
+        $accountName = $backup.Name.Split('/')[0]
+        $poolName = $backup.Name.Split('/')[1]
+        $volumeName = $backup.Name.Split('/')[2]
+        $backupName = $backup.Name.Split('/')[3]
+        
+        if ($PSCmdlet.ShouldProcess($backupName, "Remove NetApp Volume Backup")) {
+            try {
+                Write-Host "  Removing volume backup '$backupName' of volume '$volumeName' in pool '$poolName' of account '$accountName'" -ForegroundColor Yellow
+                # This command may not be available in all Az.NetAppFiles versions
+                write-host "Remove-AzNetAppFilesVolumeBackup -ResourceGroupName $ResourceGroupName -AccountName $accountName -PoolName $poolName -VolumeName $volumeName -BackupName $backupName -Force"
+                Remove-AzNetAppFilesVolumeBackup -ResourceGroupName $ResourceGroupName -AccountName $accountName -PoolName $poolName -VolumeName $volumeName -BackupName $backupName -Force
+                Write-Host "  Successfully removed volume backup '$backupName'" -ForegroundColor Green
+            }
+            catch {
+                Write-Warning "  Error removing volume backup '$backupName' (command may not be supported): ${_}"
+            }
+        }
+    }
+    # 4. remove the backup vaults
+    foreach ($vault in $NetAppResources.BackupVaults) {
+        #$vault | Format-List * -Force | Out-String -Width 4096 | Write-Host -ForegroundColor Magenta
+        $accountName = $vault.Name.Split('/')[0]
+        $vaultName = $vault.Name.Split('/')[1]
+
+        # query all backup in the vault and remove them first
+        try {
+            # This command may not be available in all Az.NetAppFiles versions
+            $backupsInVault = Get-AzNetAppFilesBackup -ResourceGroupName $ResourceGroupName -AccountName $accountName -BackupVaultName $vaultName -ErrorAction SilentlyContinue
+            if ($backupsInVault) {
+                foreach ($backup in $backupsInVault) {
+                    $backupName = $backup.Name.Split('/')[-1]
+                    if ($PSCmdlet.ShouldProcess($backupName, "Remove NetApp Backup in Vault")) {
+                        try {
+                            Write-Host "  Removing backup '$backupName' in vault '$vaultName' of account '$accountName'" -ForegroundColor Yellow
+                            # This command may not be available in all Az.NetAppFiles versions
+                            #write-host "Remove-AzNetAppFilesBackup -ResourceGroupName $ResourceGroupName -AccountName $accountName -BackupVaultName $vaultName -BackupName $backupName"
+                            Remove-AzNetAppFilesBackup -ResourceGroupName $ResourceGroupName -AccountName $accountName -BackupVaultName $vaultName -BackupName $backupName
+                            Write-Host "  Successfully removed backup '$backupName'" -ForegroundColor Green
+                        }
+                        catch {
+                            Write-Warning "  Error removing backup '$backupName' (command may not be supported): ${_}"
+                        }
+                    }
+                }
+            }
+        }
+        catch {
+            Write-Warning "  Error retrieving backups in vault '$vaultName' (command may not be supported): ${_}"
+        }
+
+        # Now remove the vault
+        if ($PSCmdlet.ShouldProcess($vaultName, "Remove NetApp Backup Vault")) {
+            try {
+                Write-Host "  Removing backup vault '$vaultName' of account '$accountName'" -ForegroundColor Yellow
+                # This command may not be available in all Az.NetAppFiles versions
+                write-host "Remove-AzNetAppFilesBackupVault -ResourceGroupName $ResourceGroupName -AccountName $accountName -BackupVaultName $vaultName"
+                Remove-AzNetAppFilesBackupVault -ResourceGroupName $ResourceGroupName -AccountName $accountName -BackupVaultName $vaultName
+                Write-Host "  Successfully removed backup vault '$vaultName'" -ForegroundColor Green
+            }
+            catch {
+                Write-Warning "  Error removing backup vault '$vaultName' (command may not be supported): ${_}"
+            }
+        }
+    }
+
+    # 5. remove the NetApp accounts
+    foreach ($account in $NetAppResources.Accounts) {
+        $account | Format-List * -Force | Out-String -Width 4096 | Write-Host -ForegroundColor Magenta
+        $accountName = $account.Name
+        
+        if ($PSCmdlet.ShouldProcess($accountName, "Remove NetApp Account")) {
+            try {
+                Write-Host "  Removing NetApp account '$accountName'" -ForegroundColor Yellow
+                #write-host "Remove-AzNetAppFilesAccount -ResourceGroupName $ResourceGroupName -AccountName $accountName"
+                Remove-AzNetAppFilesAccount -ResourceGroupName $ResourceGroupName -AccountName $accountName 
+                Write-Host "  Successfully removed NetApp account '$accountName'" -ForegroundColor Green
+            }
+            catch {
+                Write-Warning "  Error removing NetApp account '$accountName': ${_}"
+            }
+        }
+    }
+
+    exit 0
+
 }
 # Main script execution
 Write-Host "Starting cleanup of NetApp resources in resource group: $ResourceGroupName" -ForegroundColor Cyan
@@ -393,6 +329,7 @@ try {
     Write-Host "Removing NetApp resources..." -ForegroundColor Yellow
     Remove-NetAppResourcesSafely -NetAppResources $netAppResources     
     Write-Host "NetApp cleanup completed." -ForegroundColor Cyan
-} catch {
+}
+catch {
     Write-Error "Error during NetApp resource cleanup: ${_}"
 }
