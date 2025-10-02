@@ -175,138 +175,9 @@ param (
     [switch]$RemoveNetworkDependencies = $true
 )
 
-#functions
+# Import external functions
+. "$PSScriptRoot\Update-AzureCliExtensions.ps1"
 
-# Add reference to System.Web for URL encoding
-Add-Type -AssemblyName System.Web
-
-# Function to update Azure CLI extensions
-function Update-AzureCliExtensions {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory = $false)]
-        [switch]$FixProblematic = $false
-    )
-    
-    try {
-        # Check if Azure CLI is available
-        $azCliCheck = Get-Command az -ErrorAction SilentlyContinue
-        if (-not $azCliCheck) {
-            Write-Warning "Azure CLI not found. Cannot update extensions."
-            return $false
-        }
-        
-        Write-Host "Checking Azure CLI version..." -ForegroundColor Yellow
-        $azVersion = az version --json 2>$null | ConvertFrom-Json
-        Write-Host "Azure CLI version: $($azVersion.'azure-cli')" -ForegroundColor Yellow
-        
-        # Make sure the monitor-control-service extension is installed
-        Write-Host "Checking for monitor-control-service extension..." -ForegroundColor Yellow
-        $monitorControlExtension = az extension list --query "[?name=='monitor-control-service']" -o json | ConvertFrom-Json
-        
-        if (-not $monitorControlExtension -or $monitorControlExtension.Count -eq 0) {
-            Write-Host "Installing monitor-control-service extension..." -ForegroundColor Yellow
-            az extension add --name monitor-control-service --only-show-errors
-            if ($LASTEXITCODE -eq 0) {
-                Write-Host "Successfully installed monitor-control-service extension." -ForegroundColor Green
-            }
-            else {
-                Write-Warning "Failed to install monitor-control-service extension. Some DCR operations may fail."
-            }
-        }
-        else {
-            Write-Host "monitor-control-service extension is already installed." -ForegroundColor Green
-            
-            # Update the extension
-            Write-Host "Updating monitor-control-service extension..." -ForegroundColor Yellow
-            az extension update --name monitor-control-service --only-show-errors
-            if ($LASTEXITCODE -eq 0) {
-                Write-Host "Successfully updated monitor-control-service extension." -ForegroundColor Green
-            }
-        }
-        
-        # Check for outdated extensions
-        Write-Host "Checking for outdated extensions..." -ForegroundColor Yellow
-        $outdatedExtensions = az extension list-available --query "[?installed].{name:name}" -o json --only-show-errors 2>$null | ConvertFrom-Json
-        
-        # Check for problematic extensions
-        if ($FixProblematic) {
-            $problematicExtensions = @("containerapp")
-            Write-Host "Checking for known problematic extensions..." -ForegroundColor Yellow
-            $installedExtensions = az extension list --query "[].name" -o json --only-show-errors 2>$null | ConvertFrom-Json
-            
-            foreach ($extension in $problematicExtensions) {
-                if ($installedExtensions -contains $extension) {
-                    Write-Host "Found potentially problematic extension: $extension. Will attempt to reinstall it." -ForegroundColor Yellow
-                    # First try to remove the extension
-                    Write-Host "Removing $extension extension..." -ForegroundColor Yellow
-                    az extension remove -n $extension --only-show-errors 2>$null
-                    # Then add it back
-                    Write-Host "Reinstalling $extension extension..." -ForegroundColor Yellow
-                    az extension add -n $extension --only-show-errors 2>$null
-                    
-                    if ($LASTEXITCODE -eq 0) {
-                        Write-Host "Successfully reinstalled $extension extension." -ForegroundColor Green
-                    }
-                    else {
-                        Write-Warning "Could not reinstall $extension extension. You may need to manually fix it."
-                    }
-                }
-            }
-        }
-        
-        if ($outdatedExtensions -and $outdatedExtensions.Count -gt 0) {
-            Write-Host "Found potentially outdated extensions. Attempting to update all extensions..." -ForegroundColor Yellow
-            
-            # Update all extensions
-            $updateResult = az extension update --all --only-show-errors 2>&1
-            if ($LASTEXITCODE -eq 0) {
-                Write-Host "Successfully updated all extensions." -ForegroundColor Green
-            }
-            else {
-                Write-Warning "Some extensions could not be updated. Error code: $LASTEXITCODE"
-                if ($updateResult) {
-                    Write-Warning "Output: $($updateResult | Out-String)"
-                }
-                
-                # Try to update the monitor extension specifically
-                Write-Host "Attempting to update monitor extension specifically..." -ForegroundColor Yellow
-                $monitorUpdateResult = az extension update -n monitor --only-show-errors 2>&1
-                if ($LASTEXITCODE -eq 0) {
-                    Write-Host "Successfully updated monitor extension." -ForegroundColor Green
-                }
-                else {
-                    Write-Warning "Could not update monitor extension. Error code: $LASTEXITCODE"
-                    
-                    # Try removing and reinstalling the monitor extension
-                    Write-Host "Attempting to reinstall monitor extension..." -ForegroundColor Yellow
-                    az extension remove -n monitor --only-show-errors 2>$null
-                    az extension add -n monitor --only-show-errors 2>$null
-                    
-                    if ($LASTEXITCODE -eq 0) {
-                        Write-Host "Successfully reinstalled monitor extension." -ForegroundColor Green
-                    }
-                    else {
-                        Write-Warning "Could not reinstall monitor extension."
-                    }
-                }
-            }
-        }
-        else {
-            Write-Host "No outdated extensions found." -ForegroundColor Green
-        }
-        
-        return $true
-    }
-    catch {
-        Write-Warning "Error updating Azure CLI extensions: $_"
-        return $false
-    }
-}
-
-# Function to remove DCR associations using Azure CLI has been moved to cleanup_dcr.ps1
-
-# Function to remove DCR associations for resources in a resource group
 function Remove-DataCollectionRuleAssociations {
     [CmdletBinding(SupportsShouldProcess = $true)]
     param (
@@ -398,42 +269,19 @@ function Remove-ResourceGroupSafely {
                 Write-Host "Deleting resource group: $ResourceGroupName" -ForegroundColor Yellow
 
                 # 1. First, check for NetApp resources and remove them if RemoveNetApp is true
-                if ((Get-Variable -Name RemoveNetApp -Scope Script -ErrorAction SilentlyContinue) -and $RemoveNetApp) {
-                    Write-Host "  [1/5] Checking for NetApp resources..." -ForegroundColor Yellow
-                    
-                    $netappScriptPath = Join-Path $PSScriptRoot "cleanup_netapp_resources.ps1"
-                    if (Test-Path $netappScriptPath) {
-                        Write-Host "  Using NetApp cleanup script..." -ForegroundColor Yellow
-                        try {
-                            & $netappScriptPath -ResourceGroupName $ResourceGroupName -Force:$Force
-                        }
-                        catch {
-                            Write-Warning "  Error running NetApp cleanup script: $_"
-                        }
-                    }
-                    else {
-                        # Simple check for NetApp accounts if script is not available
-                        try {
-                            $module = Get-Module -Name Az.NetAppFiles -ListAvailable
-                            if ($module) {
-                                $accounts = Get-AzNetAppFilesAccount -ResourceGroupName $ResourceGroupName -ErrorAction SilentlyContinue
-                                if ($accounts -and $accounts.Count -gt 0) {
-                                    Write-Host "  Found NetApp accounts. Consider using the NetAppOnly cleanup mode first." -ForegroundColor Yellow
-                                }
-                            }
-                        }
-                        catch {
-                            Write-Warning "  Error checking for NetApp resources: $_"
-                        }
-                    }
-                }
-
+                Write-Host "  [1/5] Checking for NetApp resources..." -ForegroundColor Yellow
+                $netappScriptPath = Join-Path -Path $PSScriptRoot -ChildPath "cleanup_netapp_resources.ps1"
+                & $netappScriptPath -ResourceGroupName $ResourceGroupName -Force:$Force
+               
+                # 2. Second, check for network dependencies and remove them if RemoveNetworkDependencies is true
+                $scriptPath = Join-Path -Path $PSScriptRoot -ChildPath "cleanup_network.ps1"
+                & $scriptPath -ResourceGroupName $ResourceGroupName -Force -PassThru
                 exit 0
 
                 # 2. Second, check for network dependencies and remove them if RemoveNetworkDependencies is true
                 if ((Get-Variable -Name RemoveNetworkDependencies -Scope Script -ErrorAction SilentlyContinue) -and $RemoveNetworkDependencies) {
-                    Write-Host "  [1/5] Checking for network dependencies..." -ForegroundColor Yellow
-                    
+                    Write-Host "  [2/5] Checking for network dependencies..." -ForegroundColor Yellow
+                    & $scriptPath -ResourceGroupName $ResourceGroupName -Force -PassThru
                     # Use external cleanup_network.ps1 script
                     $scriptPath = Join-Path -Path $PSScriptRoot -ChildPath "cleanup_network.ps1"
                     if (Test-Path $scriptPath) {
@@ -595,8 +443,6 @@ function Remove-ResourceGroupSafely {
     }
 }
 
-# Function to cleanup and delete a Recovery Services vault has been moved to cleanup_vault.ps1
-
 # Function to detect Recovery Services vaults in a resource group
 function Get-RecoveryServicesVaultsInResourceGroup {
     [CmdletBinding()]
@@ -746,22 +592,107 @@ function Show-JobProgress {
     Write-Host "All jobs completed." -ForegroundColor Cyan
 }
 
-
-# Update Azure CLI extensions if requested
-if ($UpdateAzExtensions -or $FixProblematicExtensions) {
-    Write-Host "Updating Azure CLI extensions as requested..." -ForegroundColor Yellow
-    $updateResult = Update-AzureCliExtensions -FixProblematic:$FixProblematicExtensions
-    if ($updateResult) {
-        Write-Host "Azure CLI extension update process completed." -ForegroundColor Green
+# Function to categorize resource groups based on the 'keep' tag
+function Get-CategorizedResourceGroups {
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory = $false)]
+        [string]$ResourceGroupName
+    )
+    
+    # Get resource groups based on whether a specific name was provided
+    $allResourceGroups = if ($ResourceGroupName) {
+        # If a specific resource group was provided, only process that one
+        Get-AzResourceGroup -Name $ResourceGroupName -ErrorAction SilentlyContinue
     }
     else {
-        Write-Warning "Azure CLI extension update process encountered issues."
+        # Otherwise, get all resource groups
+        Get-AzResourceGroup
     }
+
+    $taggedResourceGroups = @()
+    $untaggedResourceGroups = @()
+    
+    foreach ($rg in $allResourceGroups) {
+        $tags = $rg.Tags
+        if ($tags -and $tags['keep'] -eq 'true') {
+            $taggedResourceGroups += $rg
+        }
+        else {
+            $untaggedResourceGroups += $rg
+        }
+    }
+    
+    # Return a hashtable with the categorized results
+    return @{
+        Tagged   = $taggedResourceGroups
+        Untagged = $untaggedResourceGroups
+        All      = $allResourceGroups
+    }
+}
+
+# Function to display resource groups in a formatted table with colors
+function Show-ResourceGroupSummary {
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory = $false)]
+        [array]$TaggedResourceGroups,
+        
+        [Parameter(Mandatory = $false)]
+        [array]$UntaggedResourceGroups
+    )
+    
+    # Create combined groups array with status and color information
+    $combinedGroups = @()
+    foreach ($rg in $TaggedResourceGroups) {
+        $combinedGroups += [PSCustomObject]@{
+            Name   = $rg.ResourceGroupName
+            Status = "Keep"
+            Color  = "Red"
+        }
+    }
+
+    foreach ($rg in $UntaggedResourceGroups) {
+        $combinedGroups += [PSCustomObject]@{
+            Name   = $rg.ResourceGroupName
+            Status = "Delete"
+            Color  = "Green"
+        }
+    }
+
+    # Sort alphabetically by name
+    $combinedGroups = $combinedGroups | Sort-Object -Property Name
+
+    # Create a formatted table view
+    Write-Host "`nResource Groups:" -ForegroundColor Cyan
+
+    # Create a proper PowerShell table with colors
+    $tableWidth = 60  # Adjust as needed for your display
+    $headerBorder = "-" * $tableWidth
+
+    # Display the header
+    Write-Host $headerBorder -ForegroundColor Cyan
+    Write-Host ("{0,-30} {1,-15}" -f "NAME", "STATUS") -ForegroundColor Cyan
+    Write-Host $headerBorder -ForegroundColor Cyan
+
+    # Display each row with appropriate color
+    foreach ($rg in $combinedGroups) {
+        $color = if ($rg.Color -eq "Red") { "Red" } else { "Green" }
+        Write-Host ("{0,-30} {1,-15}" -f $rg.Name, $rg.Status) -ForegroundColor $color
+    }
+
+    Write-Host $headerBorder -ForegroundColor Cyan
+    Write-Host "Total: $($combinedGroups.Count) resource groups" -ForegroundColor Cyan
+    Write-Host "Keep: $($combinedGroups.Where{$_.Status -eq 'Keep'}.Count) resource groups" -ForegroundColor Red
+    Write-Host "Delete: $($combinedGroups.Where{$_.Status -eq 'Delete'}.Count) resource groups" -ForegroundColor Green
+    
+    # Return the combined groups for further processing
+    return $combinedGroups
 }
 
 #1. give the current context and ask user if he like to proceed with this, else ask to relogin and select a subscription from a list
 $currentContext = Get-AzContext
-if ($currentContext -eq $null) {
+if ($null -eq $currentContext) {
     Write-Host "No active Azure context found. Please log in."
     Connect-AzAccount
 }
@@ -776,470 +707,13 @@ else {
     }
 }
 
-# Check if we're in DCROnly mode - just process one resource group's DCR associations and exit
-if ($CleanupMode -eq "DCROnly" -and $ResourceGroupName) {
-    Write-Host "Running in DCR associations cleanup only mode for resource group: $ResourceGroupName" -ForegroundColor Cyan
-    
-    try {
-        # Use external cleanup_dcr.ps1 script
-        $scriptPath = Join-Path -Path $PSScriptRoot -ChildPath "cleanup_dcr.ps1"
-        
-        if (Test-Path $scriptPath) {
-            Write-Host "Using external DCR cleanup script..." -ForegroundColor Yellow
-            $params = @{
-                ResourceGroupName = $ResourceGroupName
-                Force             = $true
-                PassThru          = $true
-            }
-            
-            # Pass through parameters if specified
-            if ($UseCLI) {
-                $params.Add("UseCLI", $true)
-            }
-            if ($UseRESTAPI) {
-                $params.Add("UseRESTAPI", $true)
-            }
-            
-            # Call the external script
-            $result = & $scriptPath @params
-        }
-        else {
-            # Error if script not found
-            Write-Error "Required script 'cleanup_dcr.ps1' not found at $scriptPath"
-            Write-Host "Please make sure the cleanup_dcr.ps1 script exists in the same directory." -ForegroundColor Red
-            $result = $false
-        }
-        
-        if ($result -eq $true) {
-            Write-Host "Successfully removed DCR associations from resource group $ResourceGroupName" -ForegroundColor Green
-        }
-        else {
-            Write-Host "Failed to remove some DCR associations from resource group $ResourceGroupName" -ForegroundColor Yellow
-        }
-    }
-    catch {
-        Write-Host "Error removing DCR associations: $_" -ForegroundColor Red
-    }
-    
-    # Exit early
-    Write-Host "DCR cleanup completed. Exiting script." -ForegroundColor Cyan
-    return
-}
-
-# Check if we're in VaultOnly mode - just process one resource group's Recovery Services Vaults and exit
-if ($CleanupMode -eq "VaultOnly" -and $ResourceGroupName) {
-    Write-Host "Running in Recovery Services Vaults cleanup only mode for resource group: $ResourceGroupName" -ForegroundColor Cyan
-    
-    try {
-        # Get all Recovery Services vaults in the resource group
-        $vaults = Get-RecoveryServicesVaultsInResourceGroup -ResourceGroupName $ResourceGroupName
-        
-        if ($vaults -and $vaults.Count -gt 0) {
-            Write-Host "Found $($vaults.Count) Recovery Services vault(s) to clean up in resource group '$ResourceGroupName'" -ForegroundColor Yellow
-            
-            $success = $true
-            foreach ($vault in $vaults) {
-                Write-Host "Cleaning up vault: $($vault.Name)" -ForegroundColor Cyan
-                # Use external cleanup_vault.ps1 script
-                $scriptPath = Join-Path -Path $PSScriptRoot -ChildPath "cleanup_vault.ps1"
-                if (Test-Path $scriptPath) {
-                    $result = & $scriptPath -VaultName $vault.Name -ResourceGroup $ResourceGroupName -Force -PassThru
-                    
-                    if (-not $result) {
-                        Write-Host "Failed to completely clean up vault: $($vault.Name)" -ForegroundColor Yellow
-                        $success = $false
-                    }
-                    else {
-                        Write-Host "Successfully cleaned up vault: $($vault.Name)" -ForegroundColor Green
-                    }
-                }
-                else {
-                    Write-Error "Required script 'cleanup_vault.ps1' not found at $scriptPath"
-                    $success = $false
-                }
-            }
-            
-            if ($success) {
-                Write-Host "Successfully cleaned up all Recovery Services vaults in resource group $ResourceGroupName" -ForegroundColor Green
-            }
-            else {
-                Write-Host "Some vaults could not be completely cleaned up in resource group $ResourceGroupName" -ForegroundColor Yellow
-            }
-        }
-        else {
-            Write-Host "No Recovery Services vaults found in resource group $ResourceGroupName" -ForegroundColor Green
-        }
-    }
-    catch {
-        Write-Host "Error cleaning up Recovery Services vaults: $_" -ForegroundColor Red
-    }
-    
-    # Exit early
-    Write-Host "Vault cleanup completed. Exiting script." -ForegroundColor Cyan
-    return
-}
-
-# Check if we're in NetAppOnly mode - just process one resource group's NetApp resources and exit
-if ($CleanupMode -eq "NetAppOnly" -and $ResourceGroupName) {
-    Write-Host "Running in NetApp resources cleanup only mode for resource group: $ResourceGroupName" -ForegroundColor Cyan
-    
-    try {
-        # Call the NetApp cleanup script
-        $netappScriptPath = Join-Path $PSScriptRoot "cleanup_netapp_resources.ps1"
-        
-        if (Test-Path $netappScriptPath) {
-            Write-Host "Using NetApp cleanup script: $netappScriptPath" -ForegroundColor Yellow
-            & $netappScriptPath -ResourceGroupName $ResourceGroupName -Force:$Force
-        }
-        else {
-            Write-Warning "NetApp cleanup script not found at: $netappScriptPath"
-            Write-Host "Attempting inline NetApp resource cleanup..." -ForegroundColor Yellow
-            
-            # Simplified inline cleanup if the script is not available
-            $module = Get-Module -Name Az.NetAppFiles -ListAvailable
-            if (-not $module) {
-                Write-Warning "Az.NetAppFiles module not found. Installing module..."
-                Install-Module -Name Az.NetAppFiles -Force -AllowClobber -Scope CurrentUser
-                Import-Module -Name Az.NetAppFiles -Force
-            }
-            
-            # Get NetApp accounts
-            $accounts = Get-AzNetAppFilesAccount -ResourceGroupName $ResourceGroupName -ErrorAction SilentlyContinue
-            if ($accounts) {
-                Write-Host "Found $($accounts.Count) NetApp account(s) in resource group." -ForegroundColor Yellow
-                
-                foreach ($account in $accounts) {
-                    $accountName = $account.Name
-                    
-                    # Get and remove pools (this will cascade to volumes)
-                    $pools = Get-AzNetAppFilesPool -ResourceGroupName $ResourceGroupName -AccountName $accountName -ErrorAction SilentlyContinue
-                    if ($pools) {
-                        foreach ($pool in $pools) {
-                            $poolName = $pool.Name
-                            
-                            # Get and remove volumes
-                            $volumes = Get-AzNetAppFilesVolume -ResourceGroupName $ResourceGroupName -AccountName $accountName -PoolName $poolName -ErrorAction SilentlyContinue
-                            if ($volumes) {
-                                foreach ($volume in $volumes) {
-                                    Write-Host "  Removing volume: $($volume.Name)" -ForegroundColor Yellow
-                                    try {
-                                        Remove-AzNetAppFilesVolume -ResourceGroupName $ResourceGroupName -AccountName $accountName -PoolName $poolName -Name $volume.Name -Force -ErrorAction Stop
-                                    }
-                                    catch {
-                                        Write-Warning "  Failed to remove volume: $_"
-                                    }
-                                }
-                            }
-                            
-                            Write-Host "  Removing pool: $poolName" -ForegroundColor Yellow
-                            try {
-                                Remove-AzNetAppFilesPool -ResourceGroupName $ResourceGroupName -AccountName $accountName -Name $poolName -Force -ErrorAction Stop
-                            }
-                            catch {
-                                Write-Warning "  Failed to remove pool: $_"
-                            }
-                        }
-                    }
-                    
-                    # Remove the account
-                    Write-Host "  Removing NetApp account: $accountName" -ForegroundColor Yellow
-                    try {
-                        Remove-AzNetAppFilesAccount -ResourceGroupName $ResourceGroupName -Name $accountName -Force -ErrorAction Stop
-                    }
-                    catch {
-                        Write-Warning "  Failed to remove NetApp account: $_"
-                    }
-                }
-            }
-            else {
-                Write-Host "No NetApp accounts found in resource group $ResourceGroupName" -ForegroundColor Green
-            }
-        }
-    }
-    catch {
-        Write-Host "Error cleaning up NetApp resources: $_" -ForegroundColor Red
-    }
-    
-    # Exit early
-    Write-Host "NetApp resources cleanup completed. Exiting script." -ForegroundColor Cyan
-    return
-}
-
-# Check if we're in OrderedFull mode - process resources in a specific order to handle dependencies
-if ($CleanupMode -eq "OrderedFull" -and $ResourceGroupName) {
-    Write-Host "Running in Ordered Full cleanup mode for resource group: $ResourceGroupName" -ForegroundColor Cyan
-    Write-Host "This mode processes resources in a specific order to handle complex dependencies." -ForegroundColor Cyan
-    
-    try {
-        $totalSuccess = $true
-        
-        # 1. First, clean up network dependencies
-        Write-Host "`n[Step 1/5] Cleaning up network dependencies..." -ForegroundColor Yellow
-        $networkSuccess = $true
-        if ($RemoveNetworkDependencies) {
-            # Use external cleanup_network.ps1 script
-            $scriptPath = Join-Path -Path $PSScriptRoot -ChildPath "cleanup_network.ps1"
-            if (Test-Path $scriptPath) {
-                Write-Host "  Using external network cleanup script..." -ForegroundColor Yellow
-                $networkResult = & $scriptPath -ResourceGroupName $ResourceGroupName -Force -PassThru
-                
-                if (-not $networkResult) {
-                    Write-Warning "  Network dependency cleanup completed with some failures."
-                    $networkSuccess = $false
-                    $totalSuccess = $false
-                }
-                else {
-                    Write-Host "  Network dependency cleanup completed successfully." -ForegroundColor Green
-                }
-            }
-            else {
-                Write-Error "Required script 'cleanup_network.ps1' not found at $scriptPath"
-                $networkSuccess = $false
-                $totalSuccess = $false
-            }
-        }
-        else {
-            Write-Host "  Network dependency cleanup is disabled. Skipping." -ForegroundColor Yellow
-        }
-        
-        # 2. Second, remove DCR associations
-        Write-Host "`n[Step 2/5] Removing Data Collection Rule associations..." -ForegroundColor Yellow
-        $dcrSuccess = $false
-        try {
-            $dcrSuccess = Remove-DataCollectionRuleAssociations -ResourceGroupName $ResourceGroupName -NoWaitOnDelete:$false
-            if ($dcrSuccess) {
-                Write-Host "  Successfully removed DCR associations." -ForegroundColor Green
-            }
-            else {
-                Write-Host "  Some DCR associations may not have been removed." -ForegroundColor Yellow
-                $totalSuccess = $false
-            }
-        }
-        catch {
-            Write-Host "  Error removing DCR associations: $_" -ForegroundColor Red
-            $totalSuccess = $false
-        }
-        
-        # 3. Third, clean up Recovery Services vaults
-        Write-Host "`n[Step 3/5] Cleaning up Recovery Services vaults..." -ForegroundColor Yellow
-        $vaultSuccess = $true
-        if ($RemoveVaults) {
-            try {
-                $vaults = Get-RecoveryServicesVaultsInResourceGroup -ResourceGroupName $ResourceGroupName
-                
-                if ($vaults -and $vaults.Count -gt 0) {
-                    Write-Host "  Found $($vaults.Count) Recovery Services vault(s) to clean up." -ForegroundColor Yellow
-                    
-                    foreach ($vault in $vaults) {
-                        Write-Host "  Cleaning up vault: $($vault.Name)" -ForegroundColor Yellow
-                        # Use external cleanup_vault.ps1 script
-                        $vaultScriptPath = Join-Path -Path $PSScriptRoot -ChildPath "cleanup_vault.ps1"
-                        if (Test-Path $vaultScriptPath) {
-                            $result = & $vaultScriptPath -VaultName $vault.Name -ResourceGroup $ResourceGroupName -Force -PassThru
-                            
-                            if (-not $result) {
-                                Write-Host "  Failed to completely clean up vault: $($vault.Name)" -ForegroundColor Yellow
-                                $vaultSuccess = $false
-                                $totalSuccess = $false
-                            }
-                            else {
-                                Write-Host "  Successfully cleaned up vault: $($vault.Name)" -ForegroundColor Green
-                            }
-                        }
-                        else {
-                            Write-Error "Required script 'cleanup_vault.ps1' not found at $vaultScriptPath"
-                            $vaultSuccess = $false
-                            $totalSuccess = $false
-                        }
-                    }
-                }
-                else {
-                    Write-Host "  No Recovery Services vaults found." -ForegroundColor Green
-                }
-            }
-            catch {
-                Write-Host "  Error cleaning up Recovery Services vaults: $_" -ForegroundColor Red
-                $vaultSuccess = $false
-                $totalSuccess = $false
-            }
-        }
-        else {
-            Write-Host "  Recovery Services vault cleanup is disabled. Skipping." -ForegroundColor Yellow
-        }
-        
-        # 4. Fourth, clean up NetApp resources
-        Write-Host "`n[Step 4/5] Cleaning up NetApp resources..." -ForegroundColor Yellow
-        $netAppSuccess = $true
-        if ($RemoveNetApp) {
-            $netappScriptPath = Join-Path $PSScriptRoot "cleanup_netapp_resources.ps1"
-            
-            if (Test-Path $netappScriptPath) {
-                try {
-                    & $netappScriptPath -ResourceGroupName $ResourceGroupName -Force:$Force
-                }
-                catch {
-                    Write-Host "  Error running NetApp cleanup script: $_" -ForegroundColor Red
-                    $netAppSuccess = $false
-                    $totalSuccess = $false
-                }
-            }
-            else {
-                # Handle case where script doesn't exist - use simplified inline cleanup
-                try {
-                    $module = Get-Module -Name Az.NetAppFiles -ListAvailable
-                    if (-not $module) {
-                        Install-Module -Name Az.NetAppFiles -Force -AllowClobber -Scope CurrentUser
-                        Import-Module -Name Az.NetAppFiles -Force
-                    }
-                    
-                    # Simplified cleanup (this could be improved with better handling)
-                    $accounts = Get-AzNetAppFilesAccount -ResourceGroupName $ResourceGroupName -ErrorAction SilentlyContinue
-                    if ($accounts) {
-                        # Process each account
-                        foreach ($account in $accounts) {
-                            # ... simplified NetApp cleanup logic ...
-                            Write-Host "  Cleaning up NetApp account: $($account.Name)" -ForegroundColor Yellow
-                        }
-                    }
-                    else {
-                        Write-Host "  No NetApp accounts found." -ForegroundColor Green
-                    }
-                }
-                catch {
-                    Write-Host "  Error with inline NetApp cleanup: $_" -ForegroundColor Red
-                    $netAppSuccess = $false
-                    $totalSuccess = $false
-                }
-            }
-        }
-        else {
-            Write-Host "  NetApp resource cleanup is disabled. Skipping." -ForegroundColor Yellow
-        }
-        
-        # 5. Finally, delete the resource group
-        Write-Host "`n[Step 5/5] Deleting resource group: $ResourceGroupName" -ForegroundColor Yellow
-        try {
-            Remove-AzResourceGroup -Name $ResourceGroupName -Force -Verbose
-            Write-Host "  Resource group deleted successfully." -ForegroundColor Green
-        }
-        catch {
-            Write-Host "  Error deleting resource group: $_" -ForegroundColor Red
-            $totalSuccess = $false
-            
-            if ($Force) {
-                Write-Host "  Attempting with forced deletion of compute resources..." -ForegroundColor Yellow
-                try {
-                    Remove-AzResourceGroup -Name $ResourceGroupName -Force -ForceDeletionType "Microsoft.Compute/virtualMachines,Microsoft.Compute/virtualMachineScaleSets" -Verbose
-                    Write-Host "  Resource group deleted successfully with force deletion." -ForegroundColor Green
-                }
-                catch {
-                    Write-Host "  Forced deletion also failed: $_" -ForegroundColor Red
-                    $totalSuccess = $false
-                }
-            }
-        }
-        
-        # Report overall status
-        if ($totalSuccess) {
-            Write-Host "`nOrdered Full cleanup completed successfully." -ForegroundColor Green
-        }
-        else {
-            Write-Warning "`nOrdered Full cleanup completed with some errors."
-        }
-    }
-    catch {
-        Write-Host "Error during OrderedFull cleanup: $_" -ForegroundColor Red
-    }
-    
-    # Exit early
-    return
-}
-
-# Set script-level variables based on parameters for use in functions
-$Script:RemoveVaults = $RemoveVaults
-$Script:RemoveLocks = $RemoveLocks 
-$Script:RemoveNetApp = $RemoveNetApp
-$Script:RemoveNetworkDependencies = $RemoveNetworkDependencies
-$Script:RemoveDcrAssociations = ($CleanupMode -eq "Full" -or $CleanupMode -eq "DCROnly" -or $CleanupMode -eq "OrderedFull")
-
-Write-Host "Script configuration:" -ForegroundColor Cyan
-Write-Host "  Cleanup Mode: $CleanupMode" -ForegroundColor Cyan
-Write-Host "  Remove Vaults: $($Script:RemoveVaults)" -ForegroundColor Cyan
-Write-Host "  Remove NetApp Resources: $($Script:RemoveNetApp)" -ForegroundColor Cyan
-Write-Host "  Remove DCR Associations: $($Script:RemoveDcrAssociations)" -ForegroundColor Cyan
-Write-Host "  Remove Network Dependencies: $($Script:RemoveNetworkDependencies)" -ForegroundColor Cyan
-Write-Host "  Remove Locks: $($Script:RemoveLocks)" -ForegroundColor Cyan
-Write-Host ""
-
 #2. list all resource groups with tag keep=true
-$allResourceGroups = if ($ResourceGroupName) {
-    # If a specific resource group was provided, only process that one
-    Get-AzResourceGroup -Name $ResourceGroupName -ErrorAction SilentlyContinue
-}
-else {
-    # Otherwise, get all resource groups
-    Get-AzResourceGroup
-}
-
-$taggedResourceGroups = @()
-$untaggedResourceGroups = @()
-foreach ($rg in $allResourceGroups) {
-    $tags = $rg.Tags
-    if ($tags -and $tags['keep'] -eq 'true') {
-        $taggedResourceGroups += $rg
-    }
-    else {
-        $untaggedResourceGroups += $rg
-    }
-}
+$categorizedGroups = Get-CategorizedResourceGroups -ResourceGroupName $ResourceGroupName
+$taggedResourceGroups = $categorizedGroups.Tagged
+$untaggedResourceGroups = $categorizedGroups.Untagged
 
 #3. Print the all the tagged and untagged resource groups in the same table and order them alphabetically, the tagged should be red other green
-$combinedGroups = @()
-foreach ($rg in $taggedResourceGroups) {
-    $combinedGroups += [PSCustomObject]@{
-        Name   = $rg.ResourceGroupName
-        Status = "Keep"
-        Color  = "Red"
-    }
-}
-
-foreach ($rg in $untaggedResourceGroups) {
-    $combinedGroups += [PSCustomObject]@{
-        Name   = $rg.ResourceGroupName
-        Status = "Delete"
-        Color  = "Green"
-    }
-}
-
-# 3.1 Sort alphabetically by name
-$combinedGroups = $combinedGroups | Sort-Object -Property Name
-
-# 3.2 Create a formatted table view
-Write-Host "`nResource Groups:" -ForegroundColor Cyan
-
-# 3.3 Create a proper PowerShell table with colors
-$tableWidth = 60  # Adjust as needed for your display
-$headerBorder = "-" * $tableWidth
-$formatTableParams = @{
-    AutoSize = $true
-    Property = 'Name', 'Status'
-}
-
-#3.4  Display the header
-Write-Host $headerBorder -ForegroundColor Cyan
-Write-Host ("{0,-30} {1,-15}" -f "NAME", "STATUS") -ForegroundColor Cyan
-Write-Host $headerBorder -ForegroundColor Cyan
-
-# 3.5 Display each row with appropriate color
-foreach ($rg in $combinedGroups) {
-    $color = if ($rg.Color -eq "Red") { "Red" } else { "Green" }
-    Write-Host ("{0,-30} {1,-15}" -f $rg.Name, $rg.Status) -ForegroundColor $color
-}
-
-Write-Host $headerBorder -ForegroundColor Cyan
-Write-Host "Total: $($combinedGroups.Count) resource groups" -ForegroundColor Cyan
-Write-Host "Keep: $($combinedGroups.Where{$_.Status -eq 'Keep'}.Count) resource groups" -ForegroundColor Red
-Write-Host "Delete: $($combinedGroups.Where{$_.Status -eq 'Delete'}.Count) resource groups" -ForegroundColor Green
+$combinedGroups = Show-ResourceGroupSummary -TaggedResourceGroups $taggedResourceGroups -UntaggedResourceGroups $untaggedResourceGroups
 
 
 # 4. Iterate through the list and delete the resource groups that are not tagged with keep=true
@@ -1253,11 +727,12 @@ else {
     Write-Host "Running in SYNCHRONOUS mode" -ForegroundColor Cyan
 }
 
+## START Iterate over RG's ##
 foreach ($rg in $combinedGroups) {
     if ($rg.Status -eq "Delete") {
         try {
             # Call the function to delete the resource group
-            $job = Remove-ResourceGroupSafely -ResourceGroupName $rg.Name -Force -Async:$Async -RemoveLocks:$RemoveLocks
+            $job = Remove-ResourceGroupSafely -ResourceGroupName $rg.Name -Async:$Async -RemoveLocks:$RemoveLocks
             if ($job) {
                 $deletionJobs[$rg.Name] = $job
             }

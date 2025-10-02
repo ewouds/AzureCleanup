@@ -182,7 +182,7 @@ function Remove-NetAppResourcesSafely {
             try {
                 Write-Host "  Removing volume '$volumeName' in pool '$poolName' of account '$accountName'" -ForegroundColor Yellow
                 # write-host "Remove-AzNetAppFilesVolume -ResourceGroupName $ResourceGroupName -AccountName $accountName -PoolName $poolName -VolumeName $volumeName -Force"                
-                Remove-AzNetAppFilesVolume -ResourceGroupName $ResourceGroupName -AccountName $accountName -PoolName $poolName -VolumeName $volumeName -Force
+                Remove-AzNetAppFilesVolume -ResourceGroupName $ResourceGroupName -AccountName $accountName -PoolName $poolName -VolumeName $volumeName 
                 Write-Host "  Successfully removed volume '$volumeName'" -ForegroundColor Green
             }
             catch {
@@ -243,7 +243,7 @@ function Remove-NetAppResourcesSafely {
                 Write-Host "  Removing volume backup '$backupName' of volume '$volumeName' in pool '$poolName' of account '$accountName'" -ForegroundColor Yellow
                 # This command may not be available in all Az.NetAppFiles versions
                 write-host "Remove-AzNetAppFilesVolumeBackup -ResourceGroupName $ResourceGroupName -AccountName $accountName -PoolName $poolName -VolumeName $volumeName -BackupName $backupName -Force"
-                Remove-AzNetAppFilesVolumeBackup -ResourceGroupName $ResourceGroupName -AccountName $accountName -PoolName $poolName -VolumeName $volumeName -BackupName $backupName -Force
+                Remove-AzNetAppFilesVolumeBackup -ResourceGroupName $ResourceGroupName -AccountName $accountName -PoolName $poolName -VolumeName $volumeName -BackupName $backupName
                 Write-Host "  Successfully removed volume backup '$backupName'" -ForegroundColor Green
             }
             catch {
@@ -319,6 +319,7 @@ function Remove-NetAppResourcesSafely {
     exit 0
 
 }
+
 # Main script execution
 Write-Host "Starting cleanup of NetApp resources in resource group: $ResourceGroupName" -ForegroundColor Cyan
 #Write-Host "NETAPP Cleanup is not implemented yet, please cleanup manually." -ForegroundColor Red
@@ -326,6 +327,10 @@ try {
     # 1. Get all NetApp resources in the resource group
     Write-Host "Identifying NetApp resources..." -ForegroundColor Yellow
     $netAppResources = Get-NetAppResourcesInResourceGroup -ResourceGroupName $ResourceGroupName
+    if (-not $netAppResources) {
+        Write-Host "No NetApp resources found in resource group '$ResourceGroupName'. Exiting." -ForegroundColor Green
+        exit 0
+    }
     Write-Host "Removing NetApp resources..." -ForegroundColor Yellow
     Remove-NetAppResourcesSafely -NetAppResources $netAppResources     
     Write-Host "NetApp cleanup completed." -ForegroundColor Cyan
