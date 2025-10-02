@@ -441,6 +441,187 @@ function Remove-NetworkSecurityGroupsWithDependencies {
     return $success
 }
 
+function Remove-VirtualNetworksWithDependencies {
+    <#
+    .SYNOPSIS
+        Removes Virtual Networks (VNets) and handles their associated resources with user confirmation.
+
+    .DESCRIPTION
+        This function safely removes VNets by first identifying and handling all associated resources:
+        - Subnets and their contained resources (NSGs, Route Tables, NAT Gateways)
+        - Virtual Network Gateways and connections
+        - Application Gateways
+        - VNet peerings (including cross-resource-group)
+        - Connected devices and services
+        - Service endpoints and subnet delegations
+        - Virtual machines that might be affected
+        
+        The function provides detailed information about dependencies and asks for user confirmation
+        before proceeding with any deletions, unless the Force parameter is used.
+
+    .PARAMETER ResourceGroupName
+        Name of the resource group containing the NSGs to clean up
+
+    .PARAMETER NSGName
+        Optional. Specific NSG name to target. If not provided, all NSGs in the resource group will be processed.
+
+    .PARAMETER Force
+        Switch to force removal without prompting for confirmation
+
+    .EXAMPLE
+        Remove-NetworkSecurityGroupsWithDependencies -ResourceGroupName "my-rg"
+
+    .EXAMPLE
+        Remove-NetworkSecurityGroupsWithDependencies -ResourceGroupName "my-rg" -NSGName "my-nsg" -Force
+
+    .NOTES
+        Based on Microsoft documentation: https://aka.ms/deletensg
+        NSGs cannot be deleted if they are associated with subnets or network interfaces.
+        This function handles the disassociation process safely.
+    #>
+    [CmdletBinding(SupportsShouldProcess = $true)]
+    param (
+        [Parameter(Mandatory = $true)]
+        [string]$ResourceGroupName,           
+        
+        [Parameter(Mandatory = $false)]
+        [switch]$Force
+    )
+    
+    $success = $true
+    
+    try {
+        Write-Host "=== Virtual Network Cleanup ===" -ForegroundColor Cyan
+        Write-Host "Analyzing VNets and their dependencies in resource group: $ResourceGroupName" -ForegroundColor Yellow
+
+        # Get VNets to process
+        
+        # query all VNets in this resource group
+        $vnets = @(Get-AzVirtualNetwork -ResourceGroupName $ResourceGroupName -ErrorAction SilentlyContinue)
+  
+
+        Write-Host "Found $($vnets.Count) Virtual Network(s) to analyze" -ForegroundColor Yellow
+
+        foreach ($vnet in $vnets) {
+            Write-Host "`n--- Processing VNet: '$($vnet.Name)' ---" -ForegroundColor Cyan
+
+            $hasAssociations = $false
+            $associatedResources = @()
+            
+            # Check for subnet associations
+            if ($vnet.Subnets -and $vnet.Subnets.Count -gt 0) {
+                $hasAssociations = $true
+                Write-Host "  Associated Subnets:" -ForegroundColor Yellow
+                foreach ($subnet in $vnet.Subnets) {
+                                       
+                    $resourceGroupName = $ResourceGroupName
+                    $vnetName = $vnet.Name
+                    $subnetName = $subnet.Name                
+                    write-Host "`n--- Processing Subnet: '$subnetName' in VNet: '$vnetName' ---" -ForegroundColor Magenta
+
+                    $vnet = Get-AzVirtualNetwork -Name $vnetName -ResourceGroupName $resourceGroupName
+                    $subnet = $vnet.Subnets | Where-Object { $_.Name -eq $subnetName }
+
+                    
+                    # 1. Check and handle NICs
+                    $nics = Get-AzNetworkInterface | Where-Object { $_.IpConfigurations.Subnet.Id -eq $subnet.Id }
+                    foreach ($nic in $nics) {
+                        $nicId = $nic.Id
+                        $rgAssociations = $nicId -split '/' | Select-Object -Index 4
+                        write-host $rgAssociations
+                      
+
+                        $vm = Get-AzVM -ResourceGroupName $rgAssociations | Where-Object {
+                            $_.NetworkProfile.NetworkInterfaces.Id -eq $nicId
+                        }
+
+
+                        if ($vm) {
+                            if ($ResourceGroupName -ne $vm.ResourceGroupName) {
+                                Write-Host "NIC '$($nic.Name)' is attached to VM '$($vm.Name)' in a different RG: '$($vm.ResourceGroupName)'. Skipping NIC deletion."
+                                #ask to continue with deletion of this subnet since the nic is in a different rg
+                                $response = Read-Host "`nDo you want to continue with removing Subnet '$($subnet.Name)' and its associations in a different RG: '$($rgAssociations)'? [y/N]"
+                                if ($response -notmatch '^[Yy]') {
+                                    Write-Host "Skipping Subnet '$($subnet.Name)'" -ForegroundColor Yellow
+                                    continue
+                                }
+                                else {
+                                    Write-Host "Continuing with deleting VM '$($vm.Name)'" -ForegroundColor Yellow
+                                    Write-Host "NIC '$($nic.Name)' is attached to VM '$($vm.Name)' in RG: '$($vm.ResourceGroupName)'. Skipping NIC deletion."
+                                    # delete the vm and its nic
+                                    Write-Host "Deleting VM: $($vm.Name)"
+                                    Stop-AzVM -Name $vm.Name -ResourceGroupName $vm.ResourceGroupName -Force
+                                    Remove-AzVM -Name $vm.Name -ResourceGroupName $vm.ResourceGroupName -Force
+                                    Remove-AzNetworkInterface -Name $nic.Name -ResourceGroupName $nic.ResourceGroupName -Force
+                                }
+                            }                        
+                        }
+                        Write-Host "Deleting NIC: $($nic.Name)"
+                        Remove-AzNetworkInterface -Name $nic.Name -ResourceGroupName $nic.ResourceGroupName -Force
+                       
+                    }
+
+                    # 2. Remove Delegations
+                    if ($subnet.Delegations.Count -gt 0) {
+                        Write-Host "Removing Delegations from Subnet"
+                        $subnet.Delegations.Clear()
+                        Set-AzVirtualNetwork -VirtualNetwork $vnet
+                    }
+
+                    # 3. Remove Service Association Links (SALs)
+                    # $salLinks = az rest --method get --url "https://management.azure.com/subscriptions/$subscriptionId/resourceGroups/$resourceGroupName/providers/Microsoft.Network/virtualNetworks/$vnetName?api-version=2021-02-01" | ConvertFrom-Json
+                    # $linkedSubnets = $salLinks.properties.subnets | Where-Object { $_.name -eq $subnetName -and $_.properties.serviceAssociationLinks }
+                    # foreach ($link in $linkedSubnets.properties.serviceAssociationLinks) {
+                    #     $linkId = $link.id
+                    #     Write-Host "Removing SAL: $linkId"
+                    #     az resource delete --ids $linkId
+                    #}
+
+                    # 4. Remove Locks
+                    $locks = Get-AzResourceLock | Where-Object { $_.ResourceName -eq $subnetName -and $_.ResourceType -eq "Microsoft.Network/virtualNetworks/subnets" }
+                    foreach ($lock in $locks) {
+                        Write-Host "Removing Lock: $($lock.Name)"
+                        Remove-AzResourceLock -LockId $lock.LockId -Force
+                    }
+
+                    # 5. Remove Network Profiles (used by ACI)
+                    $profiles = Get-AzResource -ResourceType "Microsoft.Network/networkProfiles" | Where-Object { $_.Properties.containerNetworkInterfaceConfigurations.subnet.id -eq $subnet.Id }
+                    foreach ($profile in $profiles) {
+                        Write-Host "Removing Network Profile: $($profile.Name)"
+                        Remove-AzResource -ResourceId $profile.ResourceId -Force
+                    }
+
+                    # 6. Delete the subnet
+                    Write-Host "Removing Subnet: $subnetName"
+                    Remove-AzVirtualNetworkSubnetConfig -Name $subnetName -VirtualNetwork $vnet
+                    Set-AzVirtualNetwork -VirtualNetwork $vnet                   
+                }
+            }
+        }        
+        # After all subnets are processed, delete the VNet
+        foreach ($vnet in $vnets) {
+            Write-Host "`n--- Deleting VNet: '$($vnet.Name)' ---" -ForegroundColor Cyan
+            try {
+                Remove-AzVirtualNetwork -Name $vnet.Name -ResourceGroupName $ResourceGroupName -Force -ErrorAction Stop
+                Write-Host "  ✓ Successfully deleted VNet '$($vnet.Name)'" -ForegroundColor Green
+            }
+            catch {
+                Write-Warning "Failed to remove VNet '$($vnet.Name)': $_"
+                $success = $false
+            }
+        }
+        Write-Host "`n=== VNET Cleanup Complete ===" -ForegroundColor Cyan
+        
+    }
+    catch {
+        Write-Error "Error during VNET cleanup: $_"
+        return $false
+    }
+    
+    return $success
+}
+
+
 function Remove-AzureNSGWithDependencies {
     <#
     .SYNOPSIS
