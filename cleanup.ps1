@@ -274,64 +274,19 @@ function Remove-ResourceGroupSafely {
                 & $netappScriptPath -ResourceGroupName $ResourceGroupName -Force:$Force
                
                 # 2. Second, check for network dependencies and remove them if RemoveNetworkDependencies is true
+                Write-Host "  [2/5] Checking for network dependencies..." -ForegroundColor Yellow
                 $scriptPath = Join-Path -Path $PSScriptRoot -ChildPath "cleanup_network.ps1"
                 & $scriptPath -ResourceGroupName $ResourceGroupName -Force -PassThru
-                exit 0
-
-                # 2. Second, check for network dependencies and remove them if RemoveNetworkDependencies is true
-                if ((Get-Variable -Name RemoveNetworkDependencies -Scope Script -ErrorAction SilentlyContinue) -and $RemoveNetworkDependencies) {
-                    Write-Host "  [2/5] Checking for network dependencies..." -ForegroundColor Yellow
-                    & $scriptPath -ResourceGroupName $ResourceGroupName -Force -PassThru
-                    # Use external cleanup_network.ps1 script
-                    $scriptPath = Join-Path -Path $PSScriptRoot -ChildPath "cleanup_network.ps1"
-                    if (Test-Path $scriptPath) {
-                        $networkResult = & $scriptPath -ResourceGroupName $ResourceGroupName -Force -PassThru
-                        
-                        if (-not $networkResult) {
-                            Write-Warning "  Network dependency cleanup completed with some failures."
-                        }
-                        else {
-                            Write-Host "  Network dependency cleanup completed successfully." -ForegroundColor Green
-                        }
-                    }
-                    else {
-                        Write-Error "Required script 'cleanup_network.ps1' not found at $scriptPath"
-                    }
-                }
-
+           
+                #### CONTINUE HERE after all VNETS are deleted ####
                 
-                
-                # 2. Second, Remove any Data Collection Rule associations before attempting to delete if enabled
-                if ($Script:RemoveDcrAssociations) {
-                    Write-Host "  [2/5] Checking for Data Collection Rule associations..." -ForegroundColor Yellow
-                    
-                    $success = $false
-                    
-                    # Determine which method to use based on parameters
-                    Write-Host "  Removing DCR associations using external script..." -ForegroundColor Yellow
-                    $params = @{
-                        ResourceGroupName = $ResourceGroupName
-                        Force             = $true
-                    }
-                    
-                    if ($Script:UseCLI) {
-                        $params.Add("UseCLI", $true)
-                    }
-                    
-                    if ($Script:UseRESTAPI) {
-                        $params.Add("UseRESTAPI", $true)
-                    }
-                    
-                    $success = Remove-DataCollectionRuleAssociations @params
-                    
-                    if (-not $success) {
-                        Write-Host "  Warning: Failed to remove DCR associations. Resource group deletion may fail." -ForegroundColor Yellow
-                        Write-Host "  You may need to remove associations manually from Azure Portal." -ForegroundColor Yellow
-                    }
-                }
-                else {
-                    Write-Host "  Skipping Data Collection Rule association check (disabled by parameter)" -ForegroundColor Yellow
-                }
+                # 3. Remove any Data Collection Rule associations before attempting to delete if enabled
+                Write-Host "  [3/5] Checking for Data Collection Rule associations..." -ForegroundColor Yellow
+                $scriptPath = Join-Path -Path $PSScriptRoot -ChildPath "cleanup_dcr.ps1"
+                & $scriptPath -ResourceGroupName $ResourceGroupName -Force -PassThru
+           
+                exit 0     
+
                 
                 # 3. Third, check for Recovery Services vaults and remove them if RemoveVaults is true
                 if ((Get-Variable -Name RemoveVaults -Scope Script -ErrorAction SilentlyContinue) -and $RemoveVaults) {
