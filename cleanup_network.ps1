@@ -1,59 +1,117 @@
 <#
 .SYNOPSIS
-    Cleans up network resources and dependencies that can block Azure resource group deletion.
+    Comprehensive network resource cleanup script for Azure resource groups with dependency handling.
 
 .DESCRIPTION
-    This script identifies and removes problematic network resources in an Azure resource group, including:
-    - Network Security Groups (NSGs) and their associated resources
-    - Bare Metal Server resources
-    - Network interfaces with specific naming patterns (e.g., "anf-*-nic-*")
-    - Orphaned network interfaces (those not attached to VMs or private endpoints)
-    - Other network resources that might prevent resource group deletion
+    This script provides comprehensive cleanup of network resources in Azure resource groups that might
+    block resource group deletion. It includes intelligent dependency analysis, cross-resource-group
+    detection, and safe removal workflows with user confirmation.
+
+    Network Resources Handled:
+    - Network Security Groups (NSGs) with subnet and NIC associations
+    - Virtual Networks (VNets) with all their dependencies
+    - Network Interfaces (NICs) including orphaned and attached NICs
+    - VNet Gateways and their connections
+    - Application Gateways
+    - VNet Peerings (including cross-resource-group peerings)
+    - Subnets with delegations, service endpoints, and NAT gateways
+    - Route Tables and Network Profiles
+    - Private Endpoints
 
     Key Features:
-    - Safe NSG removal with dependency analysis and user confirmation
-    - Comprehensive network resource cleanup
-    - Support for both interactive and automated execution
-    - Detailed logging and error handling
+    - Cross-resource-group dependency detection and warnings
+    - Detailed dependency analysis before any deletion
+    - User confirmation with clear impact explanation
+    - Safe disassociation of resources before deletion
+    - Support for both interactive and automated execution (Force mode)
+    - Comprehensive error handling and logging
+    - WhatIf support for impact analysis without changes
 
     Available Functions:
-    - Remove-AzureNSGWithDependencies: Standalone function for NSG cleanup with dependencies
+    - Remove-NetworkDependencies: Main orchestration function for all network cleanup
+    - Remove-NetworkSecurityGroupsWithDependencies: NSG-specific cleanup with associations
+    - Remove-VirtualNetworksWithDependencies: VNet-specific cleanup with subnet analysis
+    - Remove-AzureNSGWithDependencies: Standalone NSG cleanup with full workflow
 
 .PARAMETER ResourceGroupName
     Name of the resource group containing network resources to clean up
 
 .PARAMETER Subscription
-    Name of the subscription containing the resource group
+    Name of the Azure subscription containing the resource group
 
 .PARAMETER SubscriptionId
-    ID of the subscription containing the resource group
+    ID of the Azure subscription containing the resource group
 
 .PARAMETER Force
-    Switch to force removal without prompting for confirmation
+    Skip all confirmation prompts and proceed with deletion automatically.
+    Use with caution as this will remove resources without asking for confirmation.
 
 .PARAMETER PassThru
-    Switch to return $true or $false indicating success or failure
+    Return $true or $false indicating success or failure of the cleanup operation
 
 .EXAMPLE
     .\cleanup_network.ps1 -ResourceGroupName "my-rg"
+    
+    Performs interactive cleanup of all network resources in the specified resource group,
+    with user confirmation for each operation.
 
 .EXAMPLE
     .\cleanup_network.ps1 -ResourceGroupName "my-rg" -Subscription "my-subscription"
+    
+    Cleans up network resources in a specific subscription's resource group.
 
 .EXAMPLE
     $result = .\cleanup_network.ps1 -ResourceGroupName "my-rg" -Force -PassThru
+    
+    Performs automated cleanup without prompts and returns success/failure status.
 
 .EXAMPLE
     # Use the standalone NSG cleanup function
+    . .\cleanup_network.ps1
     Remove-AzureNSGWithDependencies -ResourceGroupName "my-rg" -NSGName "my-nsg"
+    
+    Import and use the NSG cleanup function for targeted NSG removal.
+
+.EXAMPLE
+    # Cleanup with WhatIf to see what would be removed
+    .\cleanup_network.ps1 -ResourceGroupName "my-rg" -WhatIf
+    
+    Shows what would be removed without actually making any changes.
+
+.EXAMPLE
+    # Remove specific VNet with Force mode
+    . .\cleanup_network.ps1
+    Remove-VirtualNetworksWithDependencies -ResourceGroupName "my-rg" -VNetName "my-vnet" -Force
+    
+    Removes a specific VNet and all its dependencies without prompts.
 
 .NOTES
-    This script requires the Az PowerShell modules, specifically Az.Network and Az.Resources
+    Author: Azure Cleanup Script
+    Version: 2.0
+    Requires: Az.Network, Az.Resources PowerShell modules
     
-    For NSG deletion, see: https://aka.ms/deletensg
+    Prerequisites:
+    - Azure PowerShell modules installed (Az.Network, Az.Resources)
+    - Authenticated to Azure (Connect-AzAccount)
+    - Appropriate permissions (Network Contributor role or equivalent)
+    
+    Documentation References:
+    - NSG deletion: https://aka.ms/deletensg
+    - VNet deletion: https://aka.ms/deletesubnet
     
     Functions available for import:
-    - Remove-AzureNSGWithDependencies
+    - Remove-AzureNSGWithDependencies: Complete NSG cleanup with dependency handling
+    - Remove-NetworkSecurityGroupsWithDependencies: NSG cleanup (internal)
+    - Remove-VirtualNetworksWithDependencies: Complete VNet cleanup with dependency handling
+    - Remove-NetworkDependencies: Main orchestration function
+    
+    Cross-Resource-Group Awareness:
+    This script detects and warns about resources in different resource groups that may
+    become orphaned after deletion. It will prompt for explicit confirmation when such
+    dependencies are detected.
+    
+    Warning: This script modifies network configurations and deletes resources.
+    Always review the impact before proceeding, especially in production environments.
 #>
 
 [CmdletBinding(SupportsShouldProcess = $true)]
@@ -833,5 +891,5 @@ if ($PassThru) {
     return $result
 }
 
-# Export the standalone NSG cleanup function for use in other scripts
-Export-ModuleMember -Function Remove-AzureNSGWithDependencies
+# Export the standalone cleanup functions for use in other scripts
+Export-ModuleMember -Function Remove-AzureNSGWithDependencies, Remove-VirtualNetworksWithDependencies

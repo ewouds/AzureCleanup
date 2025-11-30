@@ -1,138 +1,163 @@
 <#
 .SYNOPSIS
-    Cleans up Azure resource groups by deleting those that are not tagged with keep=true.
+    Comprehensive Azure resource group cleanup script with intelligent dependency handling.
 
 .DESCRIPTION
-    This script identifies Azure resource groups that are not tagged with keep=true and deletes them.
-    It supports both synchronous and asynchronous deletion modes and can optionally remove resource locks.
+    This script performs intelligent cleanup of Azure resource groups by identifying and deleting those not
+    tagged with keep=true. It automatically handles complex dependencies that commonly block deletion:
     
-    The script also handles Data Collection Rule (DCR) associations, which can prevent resource group deletion.
-    DCR associations are automatically removed by default unless disabled with -RemoveDcrAssociations:$false.
+    Cleanup Operations (in order):
+    1. Azure NetApp Files resources (volumes, pools, accounts)
+    2. Network resources (VNets, NSGs, NICs, Gateways, Peerings)
+    3. Data Collection Rule (DCR) associations
+    4. Recovery Services vaults with backup items
+    5. Resource locks
+    6. Final resource group deletion
     
-    Recovery Services vaults in resource groups are automatically cleaned up and deleted before attempting
-    to delete the resource group. This behavior can be controlled with the -RemoveVaults parameter.
-    
-    If you encounter issues with the Azure CLI extensions, use the -UpdateAzExtensions or -FixProblematicExtensions
-    parameters to fix them.
+    The script supports multiple cleanup modes for targeted operations and both synchronous and asynchronous
+    execution for optimal performance.
 
 .PARAMETER Async
-    When specified, resource groups are deleted asynchronously in background jobs.
+    Execute resource group deletions asynchronously in background jobs for parallel processing.
     Default is synchronous (blocking) deletion.
 
 .PARAMETER RemoveLocks
-    When specified, any resource locks on the resource groups will be removed before deletion.
+    Automatically remove any resource locks before deletion.
     Default behavior is to only report locks without removing them.
 
-.EXAMPLE
-    .\cleanup_resourcegroups.ps1
-    Deletes untagged resource groups synchronously without removing locks.
-
-.EXAMPLE
-    .\cleanup_resourcegroups.ps1 -Async
-    Deletes untagged resource groups asynchronously in background jobs.
-
-.EXAMPLE
-    .\cleanup_resourcegroups.ps1 -RemoveLocks
-    Deletes untagged resource groups synchronously and removes any resource locks.
-
-.EXAMPLE
-    .\cleanup_resourcegroups.ps1 -Async -RemoveLocks
-    Deletes untagged resource groups asynchronously and removes any resource locks.
-
-.PARAMETER RemoveDcrAssociations
-    When specified, any Data Collection Rule associations will be removed before attempting to delete
-    resource groups. This helps overcome a common deletion blocker when DCRs have cross-resource group
-    associations. Default is $true (associations will be removed).
-
-.PARAMETER UseCLI
-    When specified (default is $true), the script will use Azure CLI commands to remove DCR associations.
-    This is typically more reliable than using REST API.
-
-.PARAMETER UseRESTAPI
-    When specified (default is $false), the script will try to use REST API calls to remove DCR associations
-    if CLI method fails or is disabled. This is less reliable and may encounter authentication issues.
-
-.PARAMETER UpdateAzExtensions
-    When specified, the script will attempt to update Azure CLI extensions before running the cleanup.
-    This can help resolve issues with outdated extensions causing warnings or errors.
-
-.PARAMETER FixProblematicExtensions
-    When specified, the script will attempt to reinstall known problematic extensions such as containerapp.
-    This can help resolve issues with extension import errors and warnings.
+.PARAMETER CleanupMode
+    Specifies the cleanup operation mode:
+    - Full: Complete cleanup with all dependency removals and RG deletion (default)
+    - DCROnly: Remove only Data Collection Rule associations
+    - VaultOnly: Clean up only Recovery Services vaults
+    - NetAppOnly: Clean up only Azure NetApp Files resources
+    - OrderedFull: Full cleanup with enhanced dependency ordering
 
 .PARAMETER ResourceGroupName
-    When specified, the script will only process the specified resource group. This is useful for testing
-    or targeting specific resource groups.
-
-.PARAMETER CleanupMode
-    Specifies the cleanup mode. Valid values are:
-    - Full: Normal operation - removes DCR associations and deletes resource groups (default)
-    - DCROnly: Only removes DCR associations without deleting resource groups
-    - VaultOnly: Only cleans up Recovery Services vaults without deleting resource groups
-    - NetAppOnly: Only cleans up Azure NetApp Files resources without deleting resource groups
-    - OrderedFull: Performs cleanup in a specific order to handle complex dependencies
+    Target a specific resource group instead of processing all untagged groups.
+    Useful for testing or targeted cleanup operations.
 
 .PARAMETER RemoveVaults
-    When specified (default is $true), any Recovery Services vaults in the resource group will be
-    properly cleaned up and deleted before attempting to delete the resource group. This helps overcome
-    common deletion blockers related to backup items and protected resources.
-    Set to $false to skip vault deletion.
-    
+    Clean up Recovery Services vaults before deleting resource groups (default: $true).
+    Handles backup items, protected resources, and vault dependencies.
+
 .PARAMETER RemoveNetApp
-    When specified (default is $true), any Azure NetApp Files resources in the resource group will be
-    properly cleaned up and deleted before attempting to delete the resource group. This helps overcome
-    common deletion blockers related to NetApp resources with complex dependencies.
-    Set to $false to skip NetApp resource cleanup.
-    
+    Clean up Azure NetApp Files resources before deleting resource groups (default: $true).
+    Handles volumes, capacity pools, and NetApp accounts with proper ordering.
+
 .PARAMETER RemoveNetworkDependencies
-    When specified (default is $false), the script will attempt to detect and remove network dependencies
-    that might block resource group deletion, such as network interfaces used by Bare Metal Servers.
-    This is an advanced option and should be used with caution.
+    Remove network dependencies that might block deletion (default: $true).
+    Includes VNets, subnets, NSGs, NICs, gateways, peerings, and associated resources.
+
+.PARAMETER RemoveDcrAssociations
+    Remove Data Collection Rule associations before deletion (default: $true).
+    Handles cross-resource-group DCR dependencies.
+
+.PARAMETER UseCLI
+    Use Azure CLI for DCR association removal (default: $true).
+    More reliable than REST API for DCR operations.
+
+.PARAMETER UseRESTAPI
+    Use REST API for DCR association removal if CLI fails (default: $false).
+    Fallback method when CLI is unavailable.
+
+.PARAMETER UpdateAzExtensions
+    Update Azure CLI extensions before running cleanup.
+    Helps resolve extension-related warnings and errors.
+
+.PARAMETER FixProblematicExtensions
+    Reinstall known problematic extensions (e.g., containerapp).
+    Fixes extension import errors and compatibility issues.
 
 .EXAMPLE
-    .\cleanup_resourcegroups.ps1 -RemoveDcrAssociations:$false
-    Deletes untagged resource groups synchronously without removing DCR associations (not recommended).
-
-.EXAMPLE
-    .\cleanup_resourcegroups.ps1 -UseCLI:$false -UseRESTAPI:$true
-    Uses REST API instead of CLI for DCR association removal (less reliable).
-
-.EXAMPLE
-    .\cleanup_resourcegroups.ps1 -UpdateAzExtensions
-    Updates Azure CLI extensions before running the cleanup to prevent extension-related warnings.
-
-.EXAMPLE
-    .\cleanup_resourcegroups.ps1 -FixProblematicExtensions
-    Reinstalls known problematic extensions like containerapp to fix import errors and warnings.
-
-.EXAMPLE
-    .\cleanup_resourcegroups.ps1 -ResourceGroupName "my-test-rg"
-    Only processes the specified resource group, deleting it if it's not tagged with keep=true.
-
-.EXAMPLE
-    .\cleanup_resourcegroups.ps1 -ResourceGroupName "my-test-rg" -CleanupMode "DCROnly"
-    Only removes Data Collection Rule associations from the specified resource group without deleting it.
+    .\cleanup.ps1
     
-.EXAMPLE
-    .\cleanup_resourcegroups.ps1 -ResourceGroupName "my-test-rg" -CleanupMode "VaultOnly"
-    Only cleans up and deletes Recovery Services vaults in the specified resource group without deleting the group itself.
-    
-.EXAMPLE
-    .\cleanup_resourcegroups.ps1 -ResourceGroupName "my-test-rg" -CleanupMode "NetAppOnly"
-    Only cleans up Azure NetApp Files resources in the specified resource group without deleting the group itself.
-    
-.EXAMPLE
-    .\cleanup_resourcegroups.ps1 -ResourceGroupName "my-test-rg" -CleanupMode "OrderedFull" -RemoveNetworkDependencies
-    Deletes the resource group using an ordered approach that handles complex dependencies, including network dependencies.
-    Only removes DCR associations from the specified resource group without deleting it.
+    Basic usage - deletes all resource groups not tagged with keep=true, handling all dependencies.
 
 .EXAMPLE
-    .\cleanup_resourcegroups.ps1 -RemoveVaults:$false
-    Deletes untagged resource groups without attempting to clean up Recovery Services vaults first.
+    .\cleanup.ps1 -ResourceGroupName "my-test-rg"
+    
+    Clean up a specific resource group with full dependency handling.
 
 .EXAMPLE
-    .\cleanup_resourcegroups.ps1 -ResourceGroupName "my-backup-rg" -CleanupMode "VaultOnly"
-    Only cleans up Recovery Services vaults in the specified resource group without deleting it.
+    .\cleanup.ps1 -Async -RemoveLocks
+    
+    Delete all untagged resource groups asynchronously, removing locks in parallel.
+
+.EXAMPLE
+    .\cleanup.ps1 -ResourceGroupName "my-rg" -CleanupMode "NetAppOnly"
+    
+    Only clean up Azure NetApp Files resources without deleting the resource group.
+
+.EXAMPLE
+    .\cleanup.ps1 -ResourceGroupName "my-rg" -CleanupMode "VaultOnly"
+    
+    Only clean up Recovery Services vaults without deleting the resource group.
+
+
+.EXAMPLE
+    .\cleanup.ps1 -ResourceGroupName "my-rg" -CleanupMode "VaultOnly"
+    
+    Only clean up Recovery Services vaults without deleting the resource group.
+
+.EXAMPLE
+    .\cleanup.ps1 -ResourceGroupName "my-rg" -CleanupMode "DCROnly"
+    
+    Only remove Data Collection Rule associations without deleting the resource group.
+
+.EXAMPLE
+    .\cleanup.ps1 -ResourceGroupName "my-rg" -CleanupMode "OrderedFull" -RemoveNetworkDependencies
+    
+    Use ordered cleanup approach for complex dependencies including network resources.
+
+.EXAMPLE
+    .\cleanup.ps1 -UpdateAzExtensions
+    
+    Update Azure CLI extensions before cleanup to prevent extension warnings.
+
+.EXAMPLE
+    .\cleanup.ps1 -RemoveVaults:$false -RemoveNetApp:$false
+    
+    Delete resource groups without attempting vault or NetApp resource cleanup.
+
+.NOTES
+    Author: Azure Cleanup Script
+    Version: 2.0
+    Requires: Az.Network, Az.Resources, Az.RecoveryServices PowerShell modules
+    
+    Prerequisites:
+    - Azure PowerShell modules installed
+    - Authenticated to Azure (Connect-AzAccount)
+    - Appropriate permissions (Contributor or Owner role)
+    
+    Related Scripts:
+    - cleanup_network.ps1: Network resource cleanup (VNets, NSGs, NICs)
+    - cleanup_dcr.ps1: Data Collection Rule association removal
+    - cleanup_vault.ps1: Recovery Services vault cleanup
+    - cleanup_netapp_resources.ps1: Azure NetApp Files cleanup
+    - Update-AzureCliExtensions.ps1: Azure CLI extension management
+    
+    Operation Flow:
+    1. Connect to Azure and verify subscription context
+    2. Categorize resource groups by 'keep=true' tag
+    3. Display summary of resources to be deleted
+    4. For each untagged resource group:
+       a. Clean up NetApp resources (volumes → pools → accounts)
+       b. Clean up network dependencies (NICs → VNets → NSGs → Gateways)
+       c. Remove DCR associations
+       d. Clean up Recovery Services vaults
+       e. Remove resource locks
+       f. Delete resource group
+    5. Monitor progress (async) or wait for completion (sync)
+    
+    Tag Convention:
+    - Resource groups tagged with 'keep=true' are protected from deletion
+    - All other resource groups are considered candidates for deletion
+    
+    Warning: This script permanently deletes Azure resources and resource groups.
+    Always verify the operation in a test environment before running in production.
+#>
+
 #>
 
 # Script parameters
@@ -278,19 +303,14 @@ function Remove-ResourceGroupSafely {
                 $scriptPath = Join-Path -Path $PSScriptRoot -ChildPath "cleanup_network.ps1"
                 & $scriptPath -ResourceGroupName $ResourceGroupName -Force -PassThru
            
-                #### CONTINUE HERE after all VNETS are deleted ####
-                
                 # 3. Remove any Data Collection Rule associations before attempting to delete if enabled
                 Write-Host "  [3/5] Checking for Data Collection Rule associations..." -ForegroundColor Yellow
                 $scriptPath = Join-Path -Path $PSScriptRoot -ChildPath "cleanup_dcr.ps1"
                 & $scriptPath -ResourceGroupName $ResourceGroupName -Force -PassThru
-           
-                exit 0     
-
                 
-                # 3. Third, check for Recovery Services vaults and remove them if RemoveVaults is true
+                # 4. Check for Recovery Services vaults and remove them if RemoveVaults is true
                 if ((Get-Variable -Name RemoveVaults -Scope Script -ErrorAction SilentlyContinue) -and $RemoveVaults) {
-                    Write-Host "  [3/5] Checking for Recovery Services vaults..." -ForegroundColor Yellow
+                    Write-Host "  [4/5] Checking for Recovery Services vaults..." -ForegroundColor Yellow
                     $vaults = Get-RecoveryServicesVaultsInResourceGroup -ResourceGroupName $ResourceGroupName
                     
                     if ($vaults -and $vaults.Count -gt 0) {
@@ -319,8 +339,8 @@ function Remove-ResourceGroupSafely {
                 }
                 
                 
-                
                 # Check for resource locks and remove them if found
+                Write-Host "  [5/5] Checking for resource locks..." -ForegroundColor Yellow
                 $locks = Get-AzResourceLock -ResourceGroupName $ResourceGroupName -ErrorAction SilentlyContinue
                 if ($locks) {
                     Write-Host "  Found $(($locks | Measure-Object).Count) resource locks. Removing locks..." -ForegroundColor Yellow
@@ -344,7 +364,8 @@ function Remove-ResourceGroupSafely {
                     }
                 }
                 
-                # 5. Finally, attempt to delete the resource group
+                # 6. Finally, attempt to delete the resource group
+                Write-Host "  [6/6] Deleting resource group..." -ForegroundColor Yellow
                 try {
                     if ($Async) {
                         # Start the deletion as a job to run asynchronously
